@@ -212,8 +212,6 @@ client = QdrantClient(url=QDRANT_URL, timeout=60)
 
 Initial testing with batch size 64 caused Qdrant to timeout on upsert calls because the background HNSW indexer competed with write operations. Reducing to 32 with a 60-second timeout and 3-retry logic eliminated all timeouts.
 
-**Screenshot placeholder — ingest.py running, showing progress bar:**
-![Ingest Running](screenshots/03_ingest_running.png)
 
 **Screenshot placeholder — ingest.py completion output:**
 ![Ingest Complete](screenshots/04_ingest_complete.png)
@@ -312,7 +310,6 @@ The context passed to the LLM includes the best chunk from each retrieved case. 
 
 **Screenshot placeholder — generator.py output showing a full legal memo:**
 ![Generated Memo](screenshots/06_generated_memo.png)
-
 ---
 
 ## 8. Phase 5 — FastAPI REST Layer
@@ -449,8 +446,7 @@ docker build -t legal-rag-api .
 docker run -p 8000:8000 legal-rag-api
 ```
 
-**Screenshot placeholder — Docker build output completing successfully:**
-![Docker Build](screenshots/13_docker_build.png)
+
 
 **Screenshot placeholder — Docker Desktop showing legal-rag-api container running:**
 ![Docker Running](screenshots/14_docker_running.png)
@@ -475,11 +471,7 @@ Two evaluation runs demonstrate the improvement from HTML stripping and larger d
 - Latency improved with more data because Qdrant's HNSW index works more efficiently at scale — approximate nearest neighbour search gets faster as the index matures.
 - Q2 (Fourth Amendment), Q4 (due process), Q6 (habeas corpus), Q10 (immigration) all achieved 100% keyword hit rate.
 
-**Screenshot placeholder — evaluate.py Run 1 terminal output (19.5% baseline):**
-![Eval Run 1](screenshots/15_eval_run1_baseline.png)
 
-**Screenshot placeholder — evaluate.py Run 2 terminal output (73.5% improved):**
-![Eval Run 2](screenshots/16_eval_run2_improved.png)
 
 ---
 
