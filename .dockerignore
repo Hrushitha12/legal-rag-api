@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.joblib
+*.csv
+*.xlsx
+qdrant_storage/
+evaluation_report.json
+.git/
+*.md

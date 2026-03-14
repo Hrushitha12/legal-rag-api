@@ -1,0 +1,28 @@
+# Core RAG stack
+llama-index-core
+llama-index-vector-stores-qdrant
+llama-index-embeddings-huggingface
+llama-index-llms-ollama
+ 
+# Vector DB
+qdrant-client
+ 
+# Embeddings
+sentence-transformers
+ 
+# Reranking
+llama-index-postprocessor-cohere-rerank
+ 
+# Dataset loading
+datasets
+huggingface-hub
+ 
+# API
+fastapi
+uvicorn
+pydantic
+ 
+# Utilities
+python-dotenv
+tqdm
+pandas

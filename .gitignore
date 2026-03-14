@@ -1,0 +1,42 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Environment — contains API keys, never commit
+.env
+
+# Large data files
+*.csv
+*.xlsx
+*.joblib
+*.pkl
+*.parquet
+
+# Qdrant local storage — too large for git
+qdrant_storage/
+
+# MLflow local runs
+mlruns/
+mlartifacts/
+
+# Evaluation output — regenerated on each run
+evaluation_report.json
+
+# HuggingFace cache
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
