@@ -31,7 +31,7 @@ COPY api.py        .
 COPY retriever.py  .
 COPY generator.py  .
 COPY evaluate.py   .
-COPY .env          .
+
 
 # Environment variables
 # These can be overridden at runtime with: docker run -e QDRANT_URL=...
