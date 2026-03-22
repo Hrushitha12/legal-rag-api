@@ -60,8 +60,8 @@ Every component was replaced with production-grade tooling while the core retrie
 | Generation | None — ranked list only | Ollama LLM → legal memo with citations |
 | Interface | Streamlit UI | FastAPI REST API |
 | Evaluation | None | MLflow experiment tracking |
-| Deployment | None | Docker + (AWS EC2) |
-
+| Deployment | None | Docker |
+| Frontend | Streamlit UI (login/register) | Streamlit (API-connected, no auth) |
 ---
 
 ## 3. Environment Setup
@@ -452,7 +452,103 @@ docker run -p 8000:8000 legal-rag-api
 ![Docker Running](screenshots/14_docker_running.png)
 
 ---
+## 8. Phase 8 — Streamlit Frontend
+ 
+### File: `streamlit_app.py`
+ 
+A Streamlit frontend was added to make the API accessible without requiring curl or Swagger UI knowledge. The frontend calls the FastAPI backend via HTTP and displays results in a two-column layout — retrieved cases on the left, generated memo on the right.
+ 
+### Decision: Why Streamlit over React
+ 
+A React frontend would produce a more polished UI but requires a separate build pipeline, Node.js, and hosting. Streamlit runs as a Python process alongside the existing stack — no additional tools, no separate deployment. For a portfolio project where the goal is demonstrating the RAG pipeline rather than frontend engineering, Streamlit is the right trade-off.
+ 
+### Architecture: Frontend → Backend
+ 
+The Streamlit app reads `API_BASE_URL` from the environment and calls the FastAPI endpoints directly:
+ 
+```python
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+response = requests.post(f"{API_BASE_URL}/query", json={...})
+```
+ 
+This means the frontend is fully decoupled from the backend — pointing it at a different URL (e.g. a cloud deployment) requires changing only one environment variable.
+ 
+### Decision: Why `127.0.0.1` instead of `localhost` on Windows
+ 
+On Windows, `localhost` DNS resolution can fail silently due to IPv6/IPv4 ambiguity — the system tries `::1` (IPv6) before `127.0.0.1` (IPv4), but uvicorn binds to IPv4 by default. Using `127.0.0.1` explicitly bypasses this:
+ 
+```powershell
+$env:API_BASE_URL="http://127.0.0.1:8000"
+streamlit run streamlit_app.py
+```
+ 
+### Key UI features
+ 
+- Sidebar shows live system status (Qdrant connection, vector count, model name)
+- Dropdown of example queries for quick testing
+- Toggle to enable/disable LLM generation — retrieval-only mode is much faster
+- Relevance percentage badge on each case card
+- Expandable excerpts showing the actual matched chunk text
+- Download button for the generated memo as a `.txt` file
+ 
+**Screenshot — Streamlit empty state (clean UI):**
+![Streamlit Demo](screenshots/streamlit_demo.png)
+ 
+**Screenshot — Streamlit search results with case cards and memo:**
+![Streamlit Results](screenshots/streamlit_results.png)
+ 
+---
+ 
+## 9. Phase 9 — RAGAS Evaluation Framework
+ 
+### Added to: `evaluate.py`
+ 
+RAGAS (RAG Assessment) was integrated as a second evaluation layer on top of the existing rule-based structure checks. While the 4-check structure scoring confirms the memo is well-formed, RAGAS measures whether the content is actually correct and useful.
+ 
+### The three RAGAS metrics
+ 
+**Faithfulness** — the most critical metric for a legal system. Takes every factual claim in the generated memo and checks whether it is supported by the retrieved context. A score of 0 means the LLM invented everything; a score of 1 means every claim is grounded in the retrieved cases. Hallucinating case names or misquoting rulings is the most dangerous failure mode in a legal RAG system.
+ 
+**Answer Relevancy** — measures whether the memo actually addresses the query. A memo that retrieves Fourth Amendment cases but writes about contract law would score low here regardless of how well-formed it is.
+ 
+**Context Recall** — measures how well the retrieved cases were actually used in generating the memo. If 5 strong cases were retrieved but the memo only references 1, context recall suffers.
+ 
+### Target scores for production
+ 
+| Metric | Below average | Acceptable | Good |
+|---|---|---|---|
+| Faithfulness | < 0.6 | 0.6–0.8 | > 0.8 |
+| Answer relevancy | < 0.6 | 0.6–0.8 | > 0.8 |
+| Context recall | < 0.5 | 0.5–0.7 | > 0.7 |
+ 
+### Decision: Why split the generation model from the RAGAS judge model
+ 
+RAGAS uses an LLM-as-judge approach — it makes additional LLM calls to score each (query, context, answer) triplet. Using the same small 1b model for both generation and judging produces unreliable scores because the 1b model lacks the reasoning capacity to evaluate its own outputs.
+ 
+The solution was to split the two roles:
+ 
+```python
+OLLAMA_MODEL       = "llama3.2:1b"   # generation — fast, good enough for memos
+RAGAS_JUDGE_MODEL  = "llama3.1:8b"   # judging — larger model, better reasoning
+```
+ 
+This way memos generate in ~60 seconds on CPU and RAGAS gets a capable judge. The split is configured via `.env` so either model can be swapped without code changes.
+ 
+### Decision: Why Ollama as the judge instead of OpenAI
+ 
+RAGAS officially recommends GPT-4o as the judge LLM. However, this requires an OpenAI API key and charges per token. Using `llama3.1:8b` via Ollama keeps the entire evaluation pipeline free and local. The trade-off is that local judge scores may be less calibrated than GPT-4o scores — noted in the evaluation output.
+ 
+### Running RAGAS
+ 
+```bash
+python evaluate.py              # full eval: retrieval + generation + RAGAS
+python evaluate.py --no-ragas   # skip RAGAS, generation only
+python evaluate.py --no-generate # retrieval only, fastest
+```
+ 
 
+ 
+---
 ## 11. Evaluation Results — Before vs After
 
 Two evaluation runs demonstrate the improvement from HTML stripping and larger dataset:
@@ -480,7 +576,7 @@ Two evaluation runs demonstrate the improvement from HTML stripping and larger d
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        Client                               │
-│              curl / Swagger UI / frontend                   │
+│         curl · Swagger UI · Streamlit (streamlit_app.py)    │
 └──────────────────────────┬──────────────────────────────────┘
                            │ HTTP POST /query
                            ▼
@@ -541,30 +637,24 @@ Fine-tuning would produce better legal-domain embeddings but requires labelled t
 **5. Why Cohere Rerank as a second pass rather than using it for initial retrieval?**  
 Cross-encoders like Cohere Rerank are expensive — they process each (query, document) pair together. Running it over all 22,809 vectors would be extremely slow. The two-stage approach (fast ANN retrieval → expensive reranking on top-20) is standard practice in production RAG systems.
 
+**6. Why split the generation model from the RAGAS judge model?**
+The 1b model is fast enough to generate structured legal memos (~60 seconds on CPU) but lacks the reasoning capacity to reliably evaluate its own outputs. Assigning a larger 8b model as the RAGAS judge produces more reliable faithfulness and relevancy scores. The two roles are separated via environment variables so either can be swapped without code changes.
+ 
+**7. Why keep Streamlit for the frontend rather than building a React app?**
+Streamlit runs in the same Python environment as the rest of the stack — no Node.js, no build pipeline, no separate deployment. The frontend's job in this project is to make the RAG pipeline accessible for demos. A React app would demonstrate frontend engineering skills but add significant complexity without adding value to the AI engineering story.
+
 ---
 
-## 14. Next Steps — AWS Deployment
-
-The following steps remain to complete production deployment:
-
-**Step 1 — Push Docker image to AWS ECR**
-```bash
-aws ecr create-repository --repository-name legal-rag-api
-docker tag legal-rag-api:latest <account>.dkr.ecr.<region>.amazonaws.com/legal-rag-api
-docker push <account>.dkr.ecr.<region>.amazonaws.com/legal-rag-api
-```
-
-**Step 2 — Launch EC2 instance**
-- Instance type: `t3.medium` (2 vCPU, 4GB RAM) — minimum for running the API + Qdrant
-- AMI: Amazon Linux 2023
-- Storage: 30GB GP3 (for Qdrant vector storage)
-
-**Step 3 — Run on EC2**
-```bash
-# On EC2 instance
-docker pull <ecr-url>/legal-rag-api
-docker run -p 8000:8000 -e QDRANT_URL=http://localhost:6333 legal-rag-api
-```
-
-**Step 4 — Store documents in S3** (optional upgrade)  
-Replace local file references in `ingest.py` with S3 reads using `boto3`. This decouples document storage from compute.
+## 14. Future Work
+ 
+**AWS Deployment**
+The pipeline is designed to run on AWS `t3.large` (2 vCPU, 8GB RAM) — sufficient to run Qdrant, the FastAPI service, the embedding model, and `llama3.2:1b` concurrently. The Dockerfile and environment variable structure are deployment-ready. Estimated cost: ~$0.08/hour, under $5 for occasional demo use with start/stop lifecycle management.
+ 
+**RAGAS Scores with GPU**
+RAGAS evaluation timed out locally due to CPU constraints running the 8b judge model. On an AWS instance with a T4 GPU, the same evaluation completes in under 2 minutes. Full faithfulness, answer relevancy, and context recall scores would be added to the README after GPU-based evaluation.
+ 
+**Full Dataset Ingest**
+The current deployment uses 50,000 cases (22,809 vectors) as a development subset. The ingestion pipeline is validated and scales to the full 8.3M case COLD Cases dataset — expected to produce several million vectors and improve retrieval scores further, particularly for underrepresented legal domains like First Amendment and Second Amendment cases.
+ 
+**Embedding Fine-tuning**
+`all-mpnet-base-v2` generalises well to legal text without domain-specific training. A next step would be fine-tuning on legal query-document pairs (e.g. from the CLERC benchmark) to produce a legal-domain embedding model with improved retrieval precision.
