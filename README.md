@@ -2,7 +2,7 @@
 
 A production-grade Retrieval-Augmented Generation (RAG) system for US legal case research. Given a legal query, the system retrieves semantically relevant precedents from a vector database and generates a structured legal research memo using a local LLM.
 
-**Built on published research:** [arXiv:2406.01609](https://arxiv.org/abs/2406.01609) — extended from a Streamlit prototype into a deployable REST API.
+**Built on published research:** [arXiv:2406.01609](https://arxiv.org/abs/2406.01609) — extended from a Streamlit prototype into a deployable REST API with evaluation framework.
 
 ---
 
@@ -22,17 +22,17 @@ The API returns:
 ## Architecture
 
 ```
-User Query
+User Query (Streamlit UI)
     │
     ▼
 FastAPI (api.py)
     │
-    ├── Embed query with all-mpnet-base-v2 (sentence-transformers)
+    ├── LangChain HuggingFaceEmbeddings → embed query (all-mpnet-base-v2)
     │
     ├── ANN search → Qdrant vector DB (legal_cases collection)
     │         └── 768-dim cosine similarity over chunked opinion text
     │
-    ├── Deduplicate + score-rank retrieved chunks by case
+    ├── Cohere Rerank v3 → neural reranking of top results
     │
     └── Ollama LLM (llama3.2:1b) → generates legal memo with citations
 ```
@@ -41,13 +41,38 @@ FastAPI (api.py)
 
 | Layer | Tool |
 |---|---|
-| Embedding model | `sentence-transformers/all-mpnet-base-v2` |
-| Vector database | Qdrant (local Docker / AWS) |
+| RAG Orchestration | LangChain (HuggingFaceEmbeddings + QdrantVectorStore) |
+| Embedding model | `sentence-transformers/all-mpnet-base-v2` (768-dim) |
+| Vector database | Qdrant (cosine similarity, HNSW index) |
+| Reranking | Cohere Rerank v3 |
 | LLM | Ollama — `llama3.2:1b` (runs locally, no API key needed) |
 | API framework | FastAPI + Uvicorn |
-| Dataset | [COLD Cases — Harvard LIL](https://huggingface.co/datasets/harvard-lil/cold-cases) (~8M US court opinions, current through 2024) |
-| Containerisation | Docker (multi-stage build) |
-| Deployment | AWS EC2 + ECR |
+| Frontend | Streamlit |
+| Experiment tracking | MLflow |
+| Dataset | [COLD Cases — Harvard LIL](https://huggingface.co/datasets/harvard-lil/cold-cases) (~8.3M US court opinions, current through 2024) |
+| Containerisation | Docker |
+
+---
+
+## Evaluation Results
+
+Custom evaluation harness (`evaluate.py`) with MLflow experiment tracking across 10 standardised legal queries:
+
+| Metric | Score |
+|---|---|
+| Coverage | 10/10 (100%) |
+| Avg cosine similarity | 0.5899 |
+| Keyword hit rate | 73.5% |
+| Avg retrieval latency | 96ms |
+| Memo structure (4-check) | 4/4 on all queries |
+
+**Before vs After HTML stripping + larger dataset:**
+
+| | Baseline (500 cases, HTML noise) | Final (50k cases, clean text) |
+|---|---|---|
+| Avg cosine score | 0.4576 | 0.5899 (+29%) |
+| Keyword hit rate | 19.5% | 73.5% (+277%) |
+| Avg latency | 212ms | 96ms (-55%) |
 
 ---
 
@@ -92,9 +117,9 @@ curl -X POST http://localhost:8000/query \
   ],
   "memo": "## Legal Research Memo\n\nThe query concerns First Amendment...",
   "model_used": "llama3.2:1b",
-  "retrieval_ms": 38,
-  "generation_ms": 4200,
-  "total_ms": 4238
+  "retrieval_ms": 96,
+  "generation_ms": 65000,
+  "total_ms": 65096
 }
 ```
 
@@ -111,10 +136,12 @@ curl -X POST http://localhost:8000/query \
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/HrushithaTigulla/legal-rag-api.git
+git clone https://github.com/Hrushitha12/legal-rag-api.git
 cd legal-rag-api
-python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+python -m venv venv
+venv\Scripts\activate        # Windows
 pip install -r requirements.txt
+pip install streamlit datasets tqdm mlflow ragas
 ```
 
 ### 2. Start Qdrant
@@ -133,54 +160,65 @@ ollama pull llama3.2:1b
 ### 4. Ingest the dataset
 
 ```bash
-# Quick test (500 cases, ~3 min)
+# Quick test (500 cases, ~5 min)
 python ingest.py --limit 500
 
-# Full dataset (~8M cases, runs overnight)
+# Development subset used in this project (50k cases, ~4 hours)
+python ingest.py --limit 50000
+
+# Full dataset (8.3M cases, overnight)
 python ingest.py
 ```
 
 ### 5. Start the API
 
 ```bash
-uvicorn api:app --reload --port 8000
+uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
-Open **`http://localhost:8000/docs`** for the interactive Swagger UI.
+### 6. Start the Streamlit frontend
+
+```bash
+# In a new terminal
+API_BASE_URL=http://127.0.0.1:8000 streamlit run streamlit_app.py
+```
+
+Open **`http://localhost:8501`**
 
 ---
 
 ## Run with Docker
 
 ```bash
-# Build
 docker build -t legal-rag-api .
-
-# Run (Qdrant and Ollama must be running on host)
-docker run -p 8000:8000 legal-rag-api
+docker run -p 8000:8000 \
+  -e QDRANT_URL=http://host.docker.internal:6333 \
+  -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
+  legal-rag-api
 ```
 
 ---
 
 ## Evaluation
 
-A custom evaluation harness runs 10 legal test queries and measures retrieval quality, keyword coverage, and LLM memo quality.
-
 ```bash
-# Retrieval only (fast)
+# Retrieval only (fast, ~2 min)
 python evaluate.py --no-generate
 
-# Full evaluation including LLM generation
+# Full evaluation with LLM generation and RAGAS scoring
 python evaluate.py
+
+# View results in MLflow UI
+mlflow ui    # open http://localhost:5000
 ```
 
-Outputs a `evaluation_report.json` with per-query scores, keyword hit rates, latency, and court diversity metrics.
+RAGAS metrics measured: faithfulness, answer relevancy, context recall (requires Ollama running as judge LLM).
 
 ---
 
 ## Dataset
 
-**COLD Cases** — Harvard Library Innovation Lab  
+**COLD Cases** — Harvard Library Innovation Lab
 `harvard-lil/cold-cases` on HuggingFace (~8.3M US court opinions)
 
 - Full majority and dissenting opinion text
@@ -194,13 +232,18 @@ Outputs a `evaluation_report.json` with per-query scores, keyword hit rates, lat
 
 ## Project background
 
-This project extends published research on legal precedent retrieval ([arXiv:2406.01609](https://arxiv.org/abs/2406.01609), presented at MIWAI 2024). The original system used:
-- Google's Universal Sentence Encoder (2019) for embeddings
-- KMeans clustering + SVM classifier for retrieval routing
-- Flat CSV file (35MB) as the vector store
-- Streamlit UI with no API layer
+This project extends published research on legal precedent retrieval ([arXiv:2406.01609](https://arxiv.org/abs/2406.01609), presented at MIWAI 2024).
 
-This version replaces each component with production-grade tooling while preserving the core retrieval objective.
+**Original system → This system:**
+
+| Component | Original | New |
+|---|---|---|
+| Embeddings | Universal Sentence Encoder (2019, 512-dim) | all-mpnet-base-v2 (2021, 768-dim) |
+| Retrieval | KMeans + SVM + Euclidean distance | LangChain + Qdrant ANN + Cohere Rerank |
+| Storage | 35MB flat CSV | Qdrant vector DB (HNSW index) |
+| Generation | None — ranked list only | Ollama LLM → legal memo with citations |
+| Interface | Streamlit UI only | FastAPI REST API + Streamlit frontend |
+| Evaluation | None | MLflow tracking + RAGAS framework |
 
 ---
 
@@ -208,15 +251,16 @@ This version replaces each component with production-grade tooling while preserv
 
 ```
 legal-rag-api/
-├── api.py          # FastAPI application — all endpoints
-├── retriever.py    # Embedding + Qdrant search + deduplication
-├── generator.py    # Ollama LLM prompt builder and caller
-├── ingest.py       # Dataset loading, chunking, embedding, Qdrant upload
-├── evaluate.py     # Evaluation harness — retrieval and generation quality
-├── Dockerfile      # Multi-stage Docker build
+├── api.py              # FastAPI application — all endpoints
+├── retriever.py        # LangChain + Qdrant search + Cohere reranking
+├── generator.py        # Ollama LLM prompt builder and caller
+├── ingest.py           # Dataset loading, HTML stripping, chunking, embedding
+├── evaluate.py         # Evaluation harness with MLflow + RAGAS
+├── streamlit_app.py    # Streamlit frontend
+├── Dockerfile          # Docker build
 ├── .dockerignore
 ├── requirements.txt
-└── .env            # Local config (not committed)
+└── PROJECT_DOCUMENTATION.md  # Full engineering decisions doc
 ```
 
 ---
