@@ -1,5 +1,7 @@
 # Legal Precedent RAG API
+## Blog Post - https://medium.com/@htigulla/how-i-rebuilt-my-published-legal-ai-research-into-a-production-rag-system-6f725b8d58ce
 
+---
 A production-grade Retrieval-Augmented Generation (RAG) system for US legal case research. Given a legal query, the system retrieves semantically relevant precedents from a vector database and generates a structured legal research memo using a local LLM.
 
 **Built on published research:** [arXiv:2406.01609](https://arxiv.org/abs/2406.01609) — extended from a Streamlit prototype into a deployable REST API with evaluation framework.
